@@ -46,8 +46,18 @@ def _run_secret_diagnosis(mode):
             'configured': False,
             'missing': [label for label, present in status.items() if not present],
         }
-    client = KIS(settings=settings)
-    diagnosis = client.diagnose()
+    try:
+        client = KIS(settings=settings)
+        diagnosis = client.diagnose()
+    except BrokerError as error:
+        return {
+            'mode': mode,
+            'configured': True,
+            'error': str(error),
+            'http': error.http_status,
+            'msg_cd': error.msg_cd,
+            'environment_mismatch': True,
+        }
     diagnosis['configured'] = True
     return diagnosis
 
