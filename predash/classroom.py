@@ -26,7 +26,7 @@ def connection_form():
             st.rerun()
         return
     with st.form('classroom_connection'):
-        mode = st.radio('투자 환경', ['모의투자','실전 조회'], horizontal=True)
+        mode = st.radio('투자 환경', ['모의투자','실전 조회'], horizontal=True, key='class_mode')
         key = st.text_input('App Key', type='password', key='class_key')
         secret = st.text_input('App Secret', type='password', key='class_secret')
         cano = st.text_input('계좌번호 앞 8자리', type='password', max_chars=8, key='class_cano')
