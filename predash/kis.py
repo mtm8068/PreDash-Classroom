@@ -8,7 +8,10 @@ from zoneinfo import ZoneInfo
 import requests
 
 class BrokerError(RuntimeError):
-    pass
+    def __init__(self, message, *, http_status=None, msg_cd=None):
+        super().__init__(message)
+        self.http_status = http_status
+        self.msg_cd = msg_cd
 
 def account_settings(mode=None):
     """An explicit demo request never falls back to real credentials."""
@@ -47,9 +50,10 @@ class KIS:
         try:
             response = requests.request(method, self.base + path, timeout=(5, 20), **kwargs)
             if response.status_code in (401,403):
-                raise BrokerError(f'증권사 인증 거부 (HTTP {response.status_code}) · KIS_ENV의 실전/모의 구분과 해당 환경의 키를 확인하세요.')
+                raise BrokerError(f'증권사 인증 거부 (HTTP {response.status_code}) · KIS_ENV의 실전/모의 구분과 해당 환경의 키를 확인하세요.',
+                                   http_status=response.status_code)
             if response.status_code == 429:
-                raise BrokerError('증권사 호출 제한 (HTTP 429) · 잠시 후 다시 시도하세요.')
+                raise BrokerError('증권사 호출 제한 (HTTP 429) · 잠시 후 다시 시도하세요.', http_status=429)
             response.raise_for_status()
             data = response.json()
             if not isinstance(data, dict):
@@ -64,8 +68,8 @@ class KIS:
         code=str(data.get('msg_cd',''))
         safe=code if re.fullmatch(r'[A-Z0-9]{3,16}',code) else '미확인'
         if safe=='OPSQ2000':
-            return BrokerError(f'{context} (OPSQ2000 · 계좌번호 검사 실패) · KIS Developers에서 이 앱 키를 발급한 실전/모의 계좌와 Secrets의 앞 8자리·뒤 2자리, KIS_ENV가 일치하는지 확인하세요.')
-        return BrokerError(f'{context} (증권사 코드 {safe}) · 실전/모의 키, 계좌 구분, 조회 권한을 확인하세요.')
+            return BrokerError(f'{context} (OPSQ2000 · 계좌번호 검사 실패) · KIS Developers에서 이 앱 키를 발급한 실전/모의 계좌와 Secrets의 앞 8자리·뒤 2자리, KIS_ENV가 일치하는지 확인하세요.', msg_cd=safe)
+        return BrokerError(f'{context} (증권사 코드 {safe}) · 실전/모의 키, 계좌 구분, 조회 권한을 확인하세요.', msg_cd=safe)
 
     def authorize(self):
         if self.token and time.time() < self.expires:
@@ -108,6 +112,8 @@ class KIS:
             return result
         except BrokerError as exc:
             result['error'] = str(exc)
+            result['http'] = exc.http_status
+            result['msg_cd'] = exc.msg_cd
             result['environment_mismatch'] = True
             return result
 
