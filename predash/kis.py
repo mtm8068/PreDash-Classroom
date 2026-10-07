@@ -8,7 +8,10 @@ from zoneinfo import ZoneInfo
 import requests
 
 class BrokerError(RuntimeError):
-    pass
+    def __init__(self, message, *, http_status=None, msg_cd=None):
+        super().__init__(message)
+        self.http_status = http_status
+        self.msg_cd = msg_cd
 
 def account_settings(mode=None):
     """An explicit demo request never falls back to real credentials."""
@@ -47,9 +50,10 @@ class KIS:
         try:
             response = requests.request(method, self.base + path, timeout=(5, 20), **kwargs)
             if response.status_code in (401,403):
-                raise BrokerError(f'증권사 인증 거부 (HTTP {response.status_code}) · KIS_ENV의 실전/모의 구분과 해당 환경의 키를 확인하세요.')
+                raise BrokerError(f'증권사 인증 거부 (HTTP {response.status_code}) · KIS_ENV의 실전/모의 구분과 해당 환경의 키를 확인하세요.',
+                                   http_status=response.status_code)
             if response.status_code == 429:
-                raise BrokerError('증권사 호출 제한 (HTTP 429) · 잠시 후 다시 시도하세요.')
+                raise BrokerError('증권사 호출 제한 (HTTP 429) · 잠시 후 다시 시도하세요.', http_status=429)
             response.raise_for_status()
             data = response.json()
             if not isinstance(data, dict):
@@ -64,8 +68,8 @@ class KIS:
         code=str(data.get('msg_cd',''))
         safe=code if re.fullmatch(r'[A-Z0-9]{3,16}',code) else '미확인'
         if safe=='OPSQ2000':
-            return BrokerError(f'{context} (OPSQ2000 · 계좌번호 검사 실패) · KIS Developers에서 이 앱 키를 발급한 실전/모의 계좌와 Secrets의 앞 8자리·뒤 2자리, KIS_ENV가 일치하는지 확인하세요.')
-        return BrokerError(f'{context} (증권사 코드 {safe}) · 실전/모의 키, 계좌 구분, 조회 권한을 확인하세요.')
+            return BrokerError(f'{context} (OPSQ2000 · 계좌번호 검사 실패) · KIS Developers에서 이 앱 키를 발급한 실전/모의 계좌와 Secrets의 앞 8자리·뒤 2자리, KIS_ENV가 일치하는지 확인하세요.', msg_cd=safe)
+        return BrokerError(f'{context} (증권사 코드 {safe}) · 실전/모의 키, 계좌 구분, 조회 권한을 확인하세요.', msg_cd=safe)
 
     def authorize(self):
         if self.token and time.time() < self.expires:
@@ -75,6 +79,43 @@ class KIS:
             raise self.result_error(data,'증권사 토큰 발급 실패')
         self.token = data['access_token']
         self.expires = time.time() + max(0, number(data.get('expires_in', 0)) - 120)
+
+    def diagnose(self):
+        """Run a safe token + balance connectivity diagnosis without exposing credentials."""
+        result = {'mode': self.mode, 'endpoint': self.base, 'token': {}, 'balance': {}}
+        try:
+            response, data = self.call('POST', '/oauth2/tokenP',
+                json={'grant_type':'client_credentials', 'appkey':self.key, 'appsecret':self.secret})
+            token_code = str(data.get('msg_cd', '') or '')
+            result['token'] = {'ok': bool(data.get('access_token')), 'http': response.status_code,
+                               'rt_cd': str(data.get('rt_cd', '') or ''), 'msg_cd': token_code or None}
+            if not data.get('access_token'):
+                result['token']['reason'] = '토큰 발급 실패'
+                result['environment_mismatch'] = True if token_code else False
+                return result
+            token = data['access_token']
+            response, data = self.call('GET', '/uapi/domestic-stock/v1/trading/inquire-balance',
+                headers={'authorization':'Bearer '+token, 'appkey':self.key, 'appsecret':self.secret,
+                         'tr_id':'TTTC8434R' if self.mode=='real' else 'VTTC8434R',
+                         'custtype':'P', 'tr_cont':''},
+                params={'CANO':self.cano, 'ACNT_PRDT_CD':self.product, 'AFHR_FLPR_YN':'N', 'OFL_YN':'',
+                        'INQR_DVSN':'02', 'UNPR_DVSN':'01', 'FUND_STTL_ICLD_YN':'N',
+                        'FNCG_AMT_AUTO_RDPT_YN':'N', 'PRCS_DVSN':'00', 'CTX_AREA_FK100':'', 'CTX_AREA_NK100':''})
+            balance_code = str(data.get('msg_cd', '') or '')
+            balance_ok = str(data.get('rt_cd')) == '0' and isinstance(data.get('output1'), list) and isinstance(data.get('output2'), list)
+            result['balance'] = {'ok': balance_ok, 'http': response.status_code,
+                                 'rt_cd': str(data.get('rt_cd', '') or ''), 'msg_cd': balance_code or None,
+                                 'positions': len(data.get('output1', [])) if isinstance(data.get('output1'), list) else None}
+            result['environment_mismatch'] = False if balance_ok else True
+            if not balance_ok:
+                result['balance']['reason'] = '실전/모의 키·계좌 조합 또는 조회 권한을 확인하세요.'
+            return result
+        except BrokerError as exc:
+            result['error'] = str(exc)
+            result['http'] = exc.http_status
+            result['msg_cd'] = exc.msg_cd
+            result['environment_mismatch'] = True
+            return result
 
     def balance(self):
         self.authorize()
